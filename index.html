@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Vocabolario Vivo</title>
+  <meta name="theme-color" content="#110e09" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="apple-touch-icon" href="/icon.svg" />
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=Crimson+Pro:ital,wght@0,300;0,400;0,600;1,400&display=swap');
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { background: #110e09; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes fadeUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes titleIn { from { opacity: 0; transform: translateY(-16px) scale(0.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
+    input::placeholder { color: rgba(179,165,132,0.5); }
+    input:focus { outline: none; border-color: rgba(216,184,110,0.55) !important; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(216,184,110,0.25); border-radius: 2px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <script type="text/babel" data-presets="react">
+    const { useState, useEffect, useCallback } = React;
+
+    // ─── Storage (memoria del telefono) ───────────────────────────────
+    const STORAGE_KEY = "vocabolario_vivo_v1";
+    const VAULT_KEY = "vocabolario_vivo_vault";
+
+    function loadArchivio() {
+      try { const raw = localStorage.getItem(STORAGE_KEY); return raw ? JSON.parse(raw) : []; }
+      catch { return []; }
+    }
+    function saveArchivio(a) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(a)); } catch {} }
+    function loadVault() { try { return localStorage.getItem(VAULT_KEY) || "OBSIDIAN"; } catch { return "OBSIDIAN"; } }
+    function addToArchivio(archivio, wordData) {
+      const exists = archivio.some(w => w.parola.toLowerCase() === wordData.parola.toLowerCase());
+      if (exists) return archivio;
+      return [{ ...wordData, salvata: new Date().toISOString() }, ...archivio];
+    }
+
+    // ─── Export Obsidian ──────────────────────────────────────────────
+    const OBSIDIAN_FOLDER = "Vocabolario Vivo";
+    function buildMarkdown(d) {
+      const oggi = new Date().toISOString().slice(0, 10);
+      const sinonimi = (d.sinonimi || []).map(s => "- " + s).join("\n");
+      return "---\n" +
+        "parola: " + d.parola + "\n" +
+        "categoria: " + (d.categoria || "") + "\n" +
+        "pronuncia: " + (d.pronuncia || "") + "\n" +
+        "created: " + oggi + "\n" +
+        "tags: [vocabolario-vivo]\n" +
+        "---\n\n" +
+        "# " + d.parola + "\n\n" +
+        "*" + (d.categoria || "") + "*" + (d.pronuncia ? " · " + d.pronuncia : "") + "\n\n" +
+        "## Definizione\n" + (d.definizione || "") + "\n\n" +
+        "## Etimologia\n" + (d.etimologia || "") + "\n\n" +
+        "## Esempio\n> " + (d.esempio || "") + "\n\n" +
+        "## Sinonimi\n" + sinonimi + "\n\n" +
+        "## Curiosità\n" + (d.curiosita || "") + "\n";
+    }
+    function exportToObsidian(d, vault) {
+      const file = OBSIDIAN_FOLDER + "/" + d.parola;
+      const uri = "obsidian://new?vault=" + encodeURIComponent(vault) +
+        "&file=" + encodeURIComponent(file) +
+        "&content=" + encodeURIComponent(buildMarkdown(d));
+      window.location.href = uri;
+    }
+
+    // ─── Chiamata all'app (il "passacarte" /api/word) ─────────────────
+    async function fetchWordData(word) {
+      const response = await fetch("/api/word", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ word }),
+      });
+      if (!response.ok) throw new Error("errore");
+      return await response.json();
+    }
+
+    // ─── Colori e font ────────────────────────────────────────────────
+    const gold = "#D8B86E";
+    const goldFaint = "rgba(216,184,110,0.16)";
+    const goldBorder = "rgba(216,184,110,0.30)";
+    const cardBg = "linear-gradient(145deg, #1a1610 0%, #221d14 60%, #1a1610 100%)";
+    const cream = "#FCF8F0";
+    const body = "#ECE4D2";
+    const bodyDim = "#D8CEB6";
+    const muted = "#B3A584";
+    const serif = "'EB Garamond', serif";
+    const sans = "'Crimson Pro', serif";
+
+    const LOADING_MSGS = ["consultando il lessico…", "sfogliando pagine ingiallite…", "cercando la parola giusta…", "interrogando l'etimologia…"];
+
+    function Spinner() {
+      const [i, setI] = useState(0);
+      useEffect(() => { const t = setInterval(() => setI(n => (n + 1) % LOADING_MSGS.length), 1400); return () => clearInterval(t); }, []);
+      return (
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "1.2rem", padding: "3rem 0" }}>
+          <div style={{ width: 44, height: 44, border: "3px solid rgba(216,184,110,0.2)", borderTop: "3px solid " + gold, borderRadius: "50%", animation: "spin 0.9s linear infinite" }} />
+          <p style={{ color: bodyDim, fontFamily: serif, fontSize: "1rem", fontStyle: "italic" }}>{LOADING_MSGS[i]}</p>
+        </div>
+      );
+    }
+
+    function Tag({ children }) {
+      return (
+        <span style={{ display: "inline-block", padding: "2px 10px", background: "rgba(216,184,110,0.14)", border: "1px solid " + goldBorder, borderRadius: 20, fontSize: "0.7rem", letterSpacing: "0.12em", textTransform: "uppercase", color: gold, fontFamily: sans }}>{children}</span>
+      );
+    }
+
+    function ObsidianButton({ data, vault, small }) {
+      const [saved, setSaved] = useState(false);
+      const handle = (e) => { e.stopPropagation(); exportToObsidian(data, vault); setSaved(true); setTimeout(() => setSaved(false), 2500); };
+      if (small) {
+        return (
+          <button onClick={handle} title="Salva in Obsidian" style={{ background: "none", border: "none", color: saved ? gold : "rgba(216,184,110,0.5)", fontSize: "1rem", cursor: "pointer", flexShrink: 0, transition: "color 0.2s" }}>{saved ? "✓" : "💎"}</button>
+        );
+      }
+      return (
+        <button onClick={handle} style={{ padding: "0.55rem 1.1rem", background: goldFaint, border: "1px solid " + goldBorder, borderRadius: 10, color: gold, fontFamily: sans, fontSize: "0.88rem", cursor: "pointer", letterSpacing: "0.05em", display: "inline-flex", alignItems: "center", gap: "0.4rem", whiteSpace: "nowrap" }}>{saved ? "✓ aperto in Obsidian" : "💎 Salva in Obsidian"}</button>
+      );
+    }
+
+    function FlashCard({ data, flipped, onFlip }) {
+      return (
+        <div onClick={onFlip} style={{ cursor: "pointer", perspective: "1200px", width: "100%", maxWidth: 520, margin: "0 auto" }}>
+          <div style={{ position: "relative", width: "100%", minHeight: 300, transformStyle: "preserve-3d", transition: "transform 0.65s cubic-bezier(0.4,0,0.2,1)", transform: flipped ? "rotateY(180deg)" : "rotateY(0deg)" }}>
+            <div style={{ position: "absolute", inset: 0, backfaceVisibility: "hidden", WebkitBackfaceVisibility: "hidden", background: cardBg, border: "1px solid " + goldBorder, borderRadius: 20, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "2.5rem 2rem", gap: "1rem", boxShadow: "0 20px 60px rgba(0,0,0,0.6), inset 0 1px 0 rgba(216,184,110,0.1)" }}>
+              <Tag>{data.categoria}</Tag>
+              <h2 style={{ fontFamily: serif, fontSize: "clamp(2.2rem,8vw,3.6rem)", fontWeight: 500, color: cream, margin: 0, textAlign: "center", letterSpacing: "0.02em", lineHeight: 1.1 }}>{data.parola}</h2>
+              <p style={{ color: bodyDim, fontFamily: sans, fontSize: "1.05rem", margin: 0, letterSpacing: "0.05em" }}>{data.pronuncia}</p>
+              <div style={{ marginTop: "1.2rem", color: "rgba(216,184,110,0.6)", fontSize: "0.78rem", letterSpacing: "0.1em", fontFamily: sans }}>tocca per scoprire ↓</div>
+            </div>
+            <div style={{ position: "absolute", inset: 0, backfaceVisibility: "hidden", WebkitBackfaceVisibility: "hidden", transform: "rotateY(180deg)", background: cardBg, border: "1px solid " + goldBorder, borderRadius: 20, padding: "1.8rem", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.6), inset 0 1px 0 rgba(216,184,110,0.1)", display: "flex", flexDirection: "column", gap: "1rem" }}>
+              <div>
+                <p style={{ color: gold, fontFamily: sans, fontSize: "0.7rem", letterSpacing: "0.15em", textTransform: "uppercase", margin: "0 0 4px" }}>Definizione</p>
+                <p style={{ color: body, fontFamily: serif, fontSize: "1.12rem", margin: 0, lineHeight: 1.55, fontStyle: "italic" }}>{data.definizione}</p>
+              </div>
+              <div style={{ borderTop: "1px solid rgba(216,184,110,0.14)", paddingTop: "0.9rem" }}>
+                <p style={{ color: gold, fontFamily: sans, fontSize: "0.7rem", letterSpacing: "0.15em", textTransform: "uppercase", margin: "0 0 4px" }}>Esempio</p>
+                <p style={{ color: bodyDim, fontFamily: serif, fontSize: "1.02rem", margin: 0, lineHeight: 1.5 }}>"{data.esempio}"</p>
+              </div>
+              <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
+                {data.sinonimi?.map(s => (<span key={s} style={{ background: "rgba(216,184,110,0.1)", border: "1px solid rgba(216,184,110,0.22)", borderRadius: 4, padding: "2px 10px", fontFamily: sans, fontSize: "0.9rem", color: "#E6CE96" }}>{s}</span>))}
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function DetailPanel({ data }) {
+      const items = [{ icon: "🌿", label: "Etimologia", text: data.etimologia }, { icon: "✦", label: "Curiosità", text: data.curiosita }];
+      return (
+        <div style={{ width: "100%", maxWidth: 520, margin: "0 auto", display: "flex", flexDirection: "column", gap: "0.8rem", animation: "fadeUp 0.5s ease both" }}>
+          {items.map(({ icon, label, text }) => (
+            <div key={label} style={{ background: "rgba(216,184,110,0.05)", border: "1px solid rgba(216,184,110,0.14)", borderRadius: 12, padding: "1rem 1.2rem", display: "flex", gap: "0.8rem", alignItems: "flex-start" }}>
+              <span style={{ fontSize: "1.1rem", flexShrink: 0 }}>{icon}</span>
+              <div>
+                <p style={{ color: gold, fontFamily: sans, fontSize: "0.7rem", letterSpacing: "0.15em", textTransform: "uppercase", margin: "0 0 3px" }}>{label}</p>
+                <p style={{ color: bodyDim, fontFamily: serif, fontSize: "1rem", margin: 0, lineHeight: 1.5 }}>{text}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    function RipassoSection({ archivio, vault, onRemove, onClose }) {
+      const [ripassoIdx, setRipassoIdx] = useState(null);
+      const [flipped, setFlipped] = useState(false);
+      const [shuffled, setShuffled] = useState([]);
+      const startRipasso = () => { setShuffled([...archivio].sort(() => Math.random() - 0.5)); setRipassoIdx(0); setFlipped(false); };
+      const navigate = (dir) => { setFlipped(false); setTimeout(() => setRipassoIdx(i => (i + dir + shuffled.length) % shuffled.length), 150); };
+      const currentWord = ripassoIdx !== null ? shuffled[ripassoIdx] : null;
+      return (
+        <div style={{ position: "fixed", inset: 0, zIndex: 100, background: "rgba(10,8,5,0.97)", display: "flex", flexDirection: "column", alignItems: "center", overflowY: "auto", padding: "2rem 1.2rem 4rem", animation: "fadeUp 0.35s ease both" }}>
+          <div style={{ width: "100%", maxWidth: 520, display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "2rem" }}>
+            <div>
+              {ripassoIdx !== null ? (
+                <button onClick={() => setRipassoIdx(null)} style={{ background: "none", border: "none", color: bodyDim, fontFamily: sans, fontSize: "0.9rem", cursor: "pointer" }}>← lista</button>
+              ) : (
+                <div>
+                  <p style={{ color: gold, fontFamily: sans, fontSize: "0.7rem", letterSpacing: "0.2em", textTransform: "uppercase", margin: "0 0 2px" }}>archivio personale</p>
+                  <h2 style={{ color: cream, fontFamily: serif, fontSize: "1.8rem", fontWeight: 400, margin: 0 }}>Ripasso</h2>
+                </div>
+              )}
+            </div>
+            <button onClick={onClose} style={{ background: "none", border: "1px solid " + goldBorder, borderRadius: 8, color: bodyDim, fontFamily: sans, fontSize: "0.84rem", padding: "4px 12px", cursor: "pointer" }}>✕ chiudi</button>
+          </div>
+          {ripassoIdx === null && (archivio.length === 0 ? (
+            <p style={{ color: bodyDim, fontFamily: serif, fontSize: "1rem", fontStyle: "italic", textAlign: "center", marginTop: "4rem" }}>Nessuna parola salvata ancora.<br />Cerca qualcosa e apparirà qui automaticamente.</p>
+          ) : (
+            <React.Fragment>
+              <div style={{ width: "100%", maxWidth: 520, marginBottom: "1.2rem" }}>
+                <button onClick={startRipasso} style={{ width: "100%", padding: "0.75rem", background: goldFaint, border: "1px solid " + goldBorder, borderRadius: 12, color: gold, fontFamily: sans, fontSize: "0.95rem", cursor: "pointer", letterSpacing: "0.07em" }}>✦  Inizia ripasso ({archivio.length} {archivio.length === 1 ? "parola" : "parole"})</button>
+              </div>
+              <div style={{ width: "100%", maxWidth: 520, display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+                {archivio.map((w, i) => (
+                  <div key={w.parola} style={{ background: "rgba(216,184,110,0.05)", border: "1px solid rgba(216,184,110,0.14)", borderRadius: 12, padding: "0.9rem 1.1rem", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", marginBottom: "4px" }}>
+                        <span style={{ fontFamily: serif, fontSize: "1.25rem", color: cream }}>{w.parola}</span>
+                        <Tag>{w.categoria}</Tag>
+                      </div>
+                      <p style={{ color: muted, fontFamily: serif, fontSize: "0.86rem", margin: 0, fontStyle: "italic", lineHeight: 1.3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{w.definizione?.slice(0, 72)}{w.definizione?.length > 72 ? "…" : ""}</p>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.7rem", marginLeft: "0.8rem", flexShrink: 0 }}>
+                      <ObsidianButton data={w} vault={vault} small />
+                      <button onClick={() => onRemove(w.parola)} style={{ background: "none", border: "none", color: "rgba(216,184,110,0.3)", fontSize: "1rem", cursor: "pointer" }}>✕</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </React.Fragment>
+          ))}
+          {ripassoIdx !== null && currentWord && (
+            <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: "1.2rem", alignItems: "center" }}>
+              <p style={{ color: bodyDim, fontFamily: sans, fontSize: "0.86rem", letterSpacing: "0.1em" }}>{ripassoIdx + 1} / {shuffled.length}</p>
+              <FlashCard data={currentWord} flipped={flipped} onFlip={() => setFlipped(f => !f)} />
+              {flipped && <DetailPanel data={currentWord} />}
+              <div style={{ display: "flex", justifyContent: "center", marginTop: "0.2rem" }}><ObsidianButton data={currentWord} vault={vault} /></div>
+              <div style={{ display: "flex", gap: "1rem", marginTop: "0.3rem" }}>
+                <button onClick={() => navigate(-1)} style={{ background: "none", border: "1px solid " + goldBorder, borderRadius: 10, padding: "0.55rem 1.4rem", color: bodyDim, fontFamily: sans, fontSize: "0.92rem", cursor: "pointer" }}>← prec</button>
+                <button onClick={() => navigate(1)} style={{ background: goldFaint, border: "1px solid " + goldBorder, borderRadius: 10, padding: "0.55rem 1.4rem", color: gold, fontFamily: sans, fontSize: "0.92rem", cursor: "pointer" }}>succ →</button>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function SettingsPanel({ vault, setVault, onClose }) {
+      return (
+        <div style={{ position: "fixed", inset: 0, zIndex: 110, background: "rgba(10,8,5,0.97)", display: "flex", flexDirection: "column", alignItems: "center", padding: "2rem 1.2rem", animation: "fadeUp 0.3s ease both" }}>
+          <div style={{ width: "100%", maxWidth: 520, display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "2rem" }}>
+            <div>
+              <p style={{ color: gold, fontFamily: sans, fontSize: "0.7rem", letterSpacing: "0.2em", textTransform: "uppercase", margin: "0 0 2px" }}>impostazioni</p>
+              <h2 style={{ color: cream, fontFamily: serif, fontSize: "1.8rem", fontWeight: 400, margin: 0 }}>Obsidian</h2>
+            </div>
+            <button onClick={onClose} style={{ background: "none", border: "1px solid " + goldBorder, borderRadius: 8, color: bodyDim, fontFamily: sans, fontSize: "0.84rem", padding: "4px 12px", cursor: "pointer" }}>✕ chiudi</button>
+          </div>
+          <div style={{ width: "100%", maxWidth: 520, display: "flex", flexDirection: "column", gap: "1.2rem" }}>
+            <div>
+              <label style={{ color: gold, fontFamily: sans, fontSize: "0.72rem", letterSpacing: "0.15em", textTransform: "uppercase", display: "block", marginBottom: "0.5rem" }}>Nome del vault</label>
+              <input value={vault} onChange={e => setVault(e.target.value)} placeholder="OBSIDIAN" style={{ width: "100%", padding: "0.75rem 1.1rem", background: "rgba(255,255,255,0.03)", border: "1px solid rgba(216,184,110,0.22)", borderRadius: 10, color: cream, fontFamily: serif, fontSize: "1.05rem" }} />
+              <p style={{ color: muted, fontFamily: serif, fontSize: "0.92rem", lineHeight: 1.5, marginTop: "0.7rem", fontStyle: "italic" }}>È il nome esatto del vault come appare in Obsidian (non il percorso della cartella). Le note vengono create in <span style={{ color: "#E6CE96" }}>{OBSIDIAN_FOLDER}/</span>.</p>
+            </div>
+            <div style={{ background: "rgba(216,184,110,0.05)", border: "1px solid rgba(216,184,110,0.14)", borderRadius: 12, padding: "1rem 1.2rem" }}>
+              <p style={{ color: gold, fontFamily: sans, fontSize: "0.7rem", letterSpacing: "0.15em", textTransform: "uppercase", margin: "0 0 6px" }}>Come funziona</p>
+              <p style={{ color: bodyDim, fontFamily: serif, fontSize: "0.96rem", margin: 0, lineHeight: 1.55 }}>Premendo "Salva in Obsidian" l'app apre Obsidian e crea una nota .md già formattata. Se la cartella "{OBSIDIAN_FOLDER}" non esiste, creala una volta sola in Obsidian.</p>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const PAROLE_ESEMPIO = ["ineffabile", "crepuscolo", "sgomento", "vaghezza", "mellifluo", "abisso", "fulgore", "malinconia"];
+
+    function VocabolarioVivo() {
+      const [mode, setMode] = useState("home");
+      const [inputWord, setInputWord] = useState("");
+      const [wordData, setWordData] = useState(null);
+      const [flipped, setFlipped] = useState(false);
+      const [error, setError] = useState("");
+      const [archivio, setArchivio] = useState(loadArchivio);
+      const [showRipasso, setShowRipasso] = useState(false);
+      const [showSettings, setShowSettings] = useState(false);
+      const [vault, setVault] = useState(loadVault);
+
+      useEffect(() => { saveArchivio(archivio); }, [archivio]);
+      useEffect(() => { try { localStorage.setItem(VAULT_KEY, vault); } catch {} }, [vault]);
+
+      const loadWord = async (word) => {
+        setMode("loading"); setFlipped(false); setWordData(null); setError("");
+        try {
+          const data = await fetchWordData(word);
+          setWordData(data); setMode("card");
+          setArchivio(prev => addToArchivio(prev, data));
+        } catch { setError("Non riesco a trovare questa parola. Riprova."); setMode("error"); }
+      };
+      const handleSubmit = () => { const w = inputWord.trim(); if (!w) return; loadWord(w); setInputWord(""); };
+      const removeFromArchivio = useCallback((parola) => { setArchivio(prev => prev.filter(w => w.parola.toLowerCase() !== parola.toLowerCase())); }, []);
+
+      return (
+        <React.Fragment>
+          {showRipasso && <RipassoSection archivio={archivio} vault={vault} onRemove={removeFromArchivio} onClose={() => setShowRipasso(false)} />}
+          {showSettings && <SettingsPanel vault={vault} setVault={setVault} onClose={() => setShowSettings(false)} />}
+          <div style={{ minHeight: "100vh", background: "#110e09", backgroundImage: "radial-gradient(ellipse at 50% 0%, rgba(216,184,110,0.08) 0%, transparent 65%)", display: "flex", flexDirection: "column", alignItems: "center", padding: "2rem 1.2rem 4rem", fontFamily: serif }}>
+            <div style={{ width: "100%", maxWidth: 520, marginBottom: "2rem", animation: "titleIn 0.8s cubic-bezier(0.2,0,0,1) both" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                <div>
+                  <p style={{ color: gold, fontFamily: sans, fontSize: "0.7rem", letterSpacing: "0.25em", textTransform: "uppercase", marginBottom: "0.3rem", opacity: 0.85 }}>dizionario vivente</p>
+                  <h1 style={{ color: cream, fontSize: "clamp(1.8rem,6vw,2.6rem)", fontWeight: 400, letterSpacing: "0.04em", lineHeight: 1 }}>Vocabolario Vivo</h1>
+                </div>
+                <div style={{ display: "flex", gap: "0.5rem", flexShrink: 0 }}>
+                  <button onClick={() => setShowSettings(true)} title="Impostazioni" style={{ background: "rgba(216,184,110,0.08)", border: "1px solid " + goldBorder, borderRadius: 12, padding: "0.5rem 0.7rem", color: bodyDim, fontFamily: sans, fontSize: "0.8rem", cursor: "pointer", display: "flex", alignItems: "center" }}><span style={{ fontSize: "1.1rem" }}>⚙︎</span></button>
+                  <button onClick={() => setShowRipasso(true)} style={{ background: "rgba(216,184,110,0.08)", border: "1px solid " + goldBorder, borderRadius: 12, padding: "0.5rem 0.9rem", color: archivio.length > 0 ? gold : bodyDim, fontFamily: sans, fontSize: "0.8rem", cursor: "pointer", letterSpacing: "0.06em", display: "flex", flexDirection: "column", alignItems: "center", gap: "2px" }}>
+                    <span style={{ fontSize: "1.1rem" }}>📚</span><span>Ripasso</span>
+                    {archivio.length > 0 && (<span style={{ background: gold, color: "#110e09", borderRadius: 10, fontSize: "0.68rem", fontWeight: 600, padding: "0 6px", minWidth: 18, textAlign: "center" }}>{archivio.length}</span>)}
+                  </button>
+                </div>
+              </div>
+              <div style={{ width: 40, height: 1, background: "linear-gradient(90deg, transparent, " + gold + ", transparent)", margin: "0.8rem 0 0" }} />
+            </div>
+
+            <div style={{ width: "100%", maxWidth: 520, display: "flex", gap: "0.6rem", marginBottom: "0.8rem", animation: "fadeUp 0.6s 0.2s ease both" }}>
+              <input value={inputWord} onChange={e => setInputWord(e.target.value)} onKeyDown={e => e.key === "Enter" && handleSubmit()} placeholder="Inserisci una parola italiana…" style={{ flex: 1, padding: "0.75rem 1.1rem", background: "rgba(255,255,255,0.03)", border: "1px solid rgba(216,184,110,0.22)", borderRadius: 10, color: cream, fontFamily: serif, fontSize: "1.05rem" }} />
+              <button onClick={handleSubmit} style={{ padding: "0.75rem 1.2rem", background: goldFaint, border: "1px solid " + goldBorder, borderRadius: 10, color: gold, fontFamily: sans, fontSize: "0.92rem", cursor: "pointer", letterSpacing: "0.05em", whiteSpace: "nowrap" }}>Cerca</button>
+            </div>
+
+            <div style={{ width: "100%", maxWidth: 520, marginBottom: "2rem", animation: "fadeUp 0.6s 0.3s ease both" }}>
+              <button onClick={() => loadWord("__random__")} style={{ width: "100%", padding: "0.65rem", background: "transparent", border: "1px dashed rgba(216,184,110,0.25)", borderRadius: 10, color: bodyDim, fontFamily: sans, fontSize: "0.92rem", cursor: "pointer", letterSpacing: "0.06em" }}>✦  Scopri una parola rara</button>
+            </div>
+
+            {mode === "loading" && <Spinner />}
+            {mode === "error" && <p style={{ color: "#e08367", fontFamily: sans, fontSize: "1rem", textAlign: "center" }}>{error}</p>}
+
+            {mode === "card" && wordData && (
+              <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: "1.2rem", animation: "fadeUp 0.5s ease both" }}>
+                <FlashCard data={wordData} flipped={flipped} onFlip={() => setFlipped(f => !f)} />
+                {flipped && <DetailPanel data={wordData} />}
+                <div style={{ width: "100%", maxWidth: 520, margin: "0 auto", display: "flex", justifyContent: "center", marginTop: "0.2rem" }}><ObsidianButton data={wordData} vault={vault} /></div>
+                <div style={{ width: "100%", maxWidth: 520, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <p style={{ color: "rgba(216,184,110,0.55)", fontFamily: sans, fontSize: "0.8rem", fontStyle: "italic" }}>✓ salvata in archivio</p>
+                  <button onClick={() => loadWord("__random__")} style={{ background: "none", border: "none", color: "rgba(216,184,110,0.6)", cursor: "pointer", fontFamily: sans, fontSize: "0.88rem", letterSpacing: "0.08em" }}>→ altra parola casuale</button>
+                </div>
+              </div>
+            )}
+
+            {mode === "home" && (
+              <div style={{ marginTop: "0.5rem", textAlign: "center", animation: "fadeUp 0.6s 0.4s ease both" }}>
+                <p style={{ color: muted, fontFamily: serif, fontSize: "0.96rem", fontStyle: "italic", marginBottom: "1rem" }}>Qualche parola da scoprire…</p>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", justifyContent: "center", maxWidth: 420 }}>
+                  {PAROLE_ESEMPIO.map(p => (<button key={p} onClick={() => loadWord(p)} style={{ background: "rgba(216,184,110,0.07)", border: "1px solid rgba(216,184,110,0.2)", borderRadius: 20, padding: "4px 14px", color: bodyDim, fontFamily: serif, fontSize: "0.98rem", cursor: "pointer", fontStyle: "italic" }}>{p}</button>))}
+                </div>
+              </div>
+            )}
+          </div>
+        </React.Fragment>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<VocabolarioVivo />);
+  </script>
+
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", function () { navigator.serviceWorker.register("/sw.js"); });
+    }
+  </script>
+</body>
+</html>
