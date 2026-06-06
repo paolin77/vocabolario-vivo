@@ -261,7 +261,8 @@
       );
     }
 
-    const PAROLE_ESEMPIO = ["ineffabile", "crepuscolo", "sgomento", "vaghezza", "mellifluo", "abisso", "fulgore", "malinconia"];
+    const SEEN_KEY = "vocabolario_vivo_seen";
+    function loadSeen() { try { const r = localStorage.getItem(SEEN_KEY); return r ? JSON.parse(r) : []; } catch { return []; } }
 
     function VocabolarioVivo() {
       const [mode, setMode] = useState("home");
@@ -270,22 +271,30 @@
       const [flipped, setFlipped] = useState(false);
       const [error, setError] = useState("");
       const [archivio, setArchivio] = useState(loadArchivio);
-      const [seen, setSeen] = useState([]);          // parole già mostrate, per non riproporle a caso
+      const [seen, setSeen] = useState(loadSeen);    // parole già mostrate (persistente): non verranno più riproposte a caso
       const [showRipasso, setShowRipasso] = useState(false);
       const [showSettings, setShowSettings] = useState(false);
       const [vault, setVault] = useState(loadVault);
 
       useEffect(() => { saveArchivio(archivio); }, [archivio]);
       useEffect(() => { try { localStorage.setItem(VAULT_KEY, vault); } catch {} }, [vault]);
+      useEffect(() => { try { localStorage.setItem(SEEN_KEY, JSON.stringify(seen)); } catch {} }, [seen]);
 
       const loadWord = async (word) => {
         setMode("loading"); setFlipped(false); setWordData(null); setError("");
         try {
-          const avoid = word === "__random__" ? seen : [];
-          const data = await fetchWordData(word, avoid);
+          let data;
+          if (word === "__random__") {
+            const hint = seen.slice(0, 80);
+            let tries = 0;
+            do { data = await fetchWordData("__random__", hint); tries++; }
+            while (tries < 5 && seen.some(p => p.toLowerCase() === (data.parola || "").toLowerCase()));
+          } else {
+            data = await fetchWordData(word, []);
+          }
           setWordData(data); setMode("card");
-          // ricorda la parola mostrata (max 50) — NON la salva in archivio
-          setSeen(prev => [data.parola].concat(prev.filter(p => p.toLowerCase() !== data.parola.toLowerCase())).slice(0, 50));
+          // ricorda ogni parola mostrata (persistente): non verrà più riproposta a caso
+          setSeen(prev => prev.some(p => p.toLowerCase() === data.parola.toLowerCase()) ? prev : [data.parola, ...prev]);
         } catch { setError("Non riesco a trovare questa parola. Riprova."); setMode("error"); }
       };
       const handleSubmit = () => { const w = inputWord.trim(); if (!w) return; loadWord(w); setInputWord(""); };
@@ -347,12 +356,9 @@
             )}
 
             {mode === "home" && (
-              <div style={{ marginTop: "0.5rem", textAlign: "center", animation: "fadeUp 0.6s 0.4s ease both" }}>
-                <p style={{ color: muted, fontFamily: serif, fontSize: "0.96rem", fontStyle: "italic", marginBottom: "1rem" }}>Qualche parola da scoprire…</p>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", justifyContent: "center", maxWidth: 420 }}>
-                  {PAROLE_ESEMPIO.map(p => (<button key={p} onClick={() => loadWord(p)} style={{ background: "rgba(216,184,110,0.07)", border: "1px solid rgba(216,184,110,0.2)", borderRadius: 20, padding: "4px 14px", color: bodyDim, fontFamily: serif, fontSize: "0.98rem", cursor: "pointer", fontStyle: "italic" }}>{p}</button>))}
-                </div>
-              </div>
+              <p style={{ marginTop: "1rem", color: muted, fontFamily: serif, fontSize: "1.02rem", fontStyle: "italic", textAlign: "center", maxWidth: 420, lineHeight: 1.6 }}>
+                Cerca una parola che ti incuriosisce,<br />oppure lasciati sorprendere da una parola rara.
+              </p>
             )}
           </div>
         </React.Fragment>
