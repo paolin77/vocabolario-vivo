@@ -31,7 +31,6 @@
   <script type="text/babel" data-presets="react">
     const { useState, useEffect, useCallback } = React;
 
-    // ─── Storage (memoria del telefono) ───────────────────────────────
     const STORAGE_KEY = "vocabolario_vivo_v1";
     const VAULT_KEY = "vocabolario_vivo_vault";
 
@@ -47,7 +46,6 @@
       return [{ ...wordData, salvata: new Date().toISOString() }, ...archivio];
     }
 
-    // ─── Export Obsidian ──────────────────────────────────────────────
     const OBSIDIAN_FOLDER = "Vocabolario Vivo";
     function buildMarkdown(d) {
       const oggi = new Date().toISOString().slice(0, 10);
@@ -75,18 +73,17 @@
       window.location.href = uri;
     }
 
-    // ─── Chiamata all'app (il "passacarte" /api/word) ─────────────────
-    async function fetchWordData(word) {
+    // Ora invia anche la lista "avoid" (parole da non riproporre) per le richieste casuali.
+    async function fetchWordData(word, avoid) {
       const response = await fetch("/api/word", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ word }),
+        body: JSON.stringify({ word, avoid: avoid || [] }),
       });
       if (!response.ok) throw new Error("errore");
       return await response.json();
     }
 
-    // ─── Colori e font ────────────────────────────────────────────────
     const gold = "#D8B86E";
     const goldFaint = "rgba(216,184,110,0.16)";
     const goldBorder = "rgba(216,184,110,0.30)";
@@ -198,14 +195,14 @@
             <button onClick={onClose} style={{ background: "none", border: "1px solid " + goldBorder, borderRadius: 8, color: bodyDim, fontFamily: sans, fontSize: "0.84rem", padding: "4px 12px", cursor: "pointer" }}>✕ chiudi</button>
           </div>
           {ripassoIdx === null && (archivio.length === 0 ? (
-            <p style={{ color: bodyDim, fontFamily: serif, fontSize: "1rem", fontStyle: "italic", textAlign: "center", marginTop: "4rem" }}>Nessuna parola salvata ancora.<br />Cerca qualcosa e apparirà qui automaticamente.</p>
+            <p style={{ color: bodyDim, fontFamily: serif, fontSize: "1rem", fontStyle: "italic", textAlign: "center", marginTop: "4rem" }}>Nessuna parola salvata ancora.<br />Salva le parole che ti interessano con la stella ☆ e le ritroverai qui.</p>
           ) : (
             <React.Fragment>
               <div style={{ width: "100%", maxWidth: 520, marginBottom: "1.2rem" }}>
                 <button onClick={startRipasso} style={{ width: "100%", padding: "0.75rem", background: goldFaint, border: "1px solid " + goldBorder, borderRadius: 12, color: gold, fontFamily: sans, fontSize: "0.95rem", cursor: "pointer", letterSpacing: "0.07em" }}>✦  Inizia ripasso ({archivio.length} {archivio.length === 1 ? "parola" : "parole"})</button>
               </div>
               <div style={{ width: "100%", maxWidth: 520, display: "flex", flexDirection: "column", gap: "0.6rem" }}>
-                {archivio.map((w, i) => (
+                {archivio.map((w) => (
                   <div key={w.parola} style={{ background: "rgba(216,184,110,0.05)", border: "1px solid rgba(216,184,110,0.14)", borderRadius: 12, padding: "0.9rem 1.1rem", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", marginBottom: "4px" }}>
@@ -216,7 +213,7 @@
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: "0.7rem", marginLeft: "0.8rem", flexShrink: 0 }}>
                       <ObsidianButton data={w} vault={vault} small />
-                      <button onClick={() => onRemove(w.parola)} style={{ background: "none", border: "none", color: "rgba(216,184,110,0.3)", fontSize: "1rem", cursor: "pointer" }}>✕</button>
+                      <button onClick={() => onRemove(w.parola)} title="Rimuovi dall'archivio" style={{ background: "none", border: "none", color: "rgba(216,184,110,0.3)", fontSize: "1rem", cursor: "pointer" }}>✕</button>
                     </div>
                   </div>
                 ))}
@@ -273,6 +270,7 @@
       const [flipped, setFlipped] = useState(false);
       const [error, setError] = useState("");
       const [archivio, setArchivio] = useState(loadArchivio);
+      const [seen, setSeen] = useState([]);          // parole già mostrate, per non riproporle a caso
       const [showRipasso, setShowRipasso] = useState(false);
       const [showSettings, setShowSettings] = useState(false);
       const [vault, setVault] = useState(loadVault);
@@ -283,13 +281,22 @@
       const loadWord = async (word) => {
         setMode("loading"); setFlipped(false); setWordData(null); setError("");
         try {
-          const data = await fetchWordData(word);
+          const avoid = word === "__random__" ? seen : [];
+          const data = await fetchWordData(word, avoid);
           setWordData(data); setMode("card");
-          setArchivio(prev => addToArchivio(prev, data));
+          // ricorda la parola mostrata (max 50) — NON la salva in archivio
+          setSeen(prev => [data.parola].concat(prev.filter(p => p.toLowerCase() !== data.parola.toLowerCase())).slice(0, 50));
         } catch { setError("Non riesco a trovare questa parola. Riprova."); setMode("error"); }
       };
       const handleSubmit = () => { const w = inputWord.trim(); if (!w) return; loadWord(w); setInputWord(""); };
       const removeFromArchivio = useCallback((parola) => { setArchivio(prev => prev.filter(w => w.parola.toLowerCase() !== parola.toLowerCase())); }, []);
+
+      const inArchivio = (d) => !!d && archivio.some(w => w.parola.toLowerCase() === d.parola.toLowerCase());
+      const toggleArchivio = (d) => {
+        if (!d) return;
+        if (inArchivio(d)) removeFromArchivio(d.parola);
+        else setArchivio(prev => addToArchivio(prev, d));
+      };
 
       return (
         <React.Fragment>
@@ -329,9 +336,11 @@
               <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: "1.2rem", animation: "fadeUp 0.5s ease both" }}>
                 <FlashCard data={wordData} flipped={flipped} onFlip={() => setFlipped(f => !f)} />
                 {flipped && <DetailPanel data={wordData} />}
-                <div style={{ width: "100%", maxWidth: 520, margin: "0 auto", display: "flex", justifyContent: "center", marginTop: "0.2rem" }}><ObsidianButton data={wordData} vault={vault} /></div>
-                <div style={{ width: "100%", maxWidth: 520, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <p style={{ color: "rgba(216,184,110,0.55)", fontFamily: sans, fontSize: "0.8rem", fontStyle: "italic" }}>✓ salvata in archivio</p>
+                <div style={{ width: "100%", maxWidth: 520, margin: "0 auto", display: "flex", justifyContent: "center", gap: "0.7rem", flexWrap: "wrap", marginTop: "0.2rem" }}>
+                  <button onClick={() => toggleArchivio(wordData)} style={{ padding: "0.55rem 1.1rem", background: inArchivio(wordData) ? "rgba(216,184,110,0.30)" : goldFaint, border: "1px solid " + goldBorder, borderRadius: 10, color: gold, fontFamily: sans, fontSize: "0.88rem", cursor: "pointer", letterSpacing: "0.05em", whiteSpace: "nowrap" }}>{inArchivio(wordData) ? "★ In archivio" : "☆ Salva in archivio"}</button>
+                  <ObsidianButton data={wordData} vault={vault} />
+                </div>
+                <div style={{ width: "100%", maxWidth: 520, margin: "0 auto", display: "flex", justifyContent: "center" }}>
                   <button onClick={() => loadWord("__random__")} style={{ background: "none", border: "none", color: "rgba(216,184,110,0.6)", cursor: "pointer", fontFamily: sans, fontSize: "0.88rem", letterSpacing: "0.08em" }}>→ altra parola casuale</button>
                 </div>
               </div>
